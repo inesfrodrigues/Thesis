@@ -41,6 +41,14 @@ class SelfAttention(nn.Module):
             
         attention = torch.softmax(energy / (self.embed_size ** (1/2)), dim = 3)
         
+        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(
+            N, query_len, self.heads * self.head_dim
+        )
+        # attention shape: (N, heads, quer_len, key_len)
+        # values shape: (N, value_len, heads, heads_dim)
+        # after einsum (N, query_len, heads, heads_dim) then flatten last two dimensions
+        
+        
         out = self.fc_out(out)
         
         return out
