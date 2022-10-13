@@ -188,7 +188,7 @@ class MBConv(nn.Module):
         return x
     
     
-    class HAT_Net(nn.Module):
+class HAT_Net(nn.Module):
     def __init__(self, dims, head, kernel_sizes, expansions, grid_sizes, ds_ratios, drop, depths, fc):
         super().__init__()
         self.depths = depths
