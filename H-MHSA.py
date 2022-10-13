@@ -214,6 +214,7 @@ class HAT_Net(nn.Module):
         self.fullyconnected = nn.Sequential(
            # nn.Dropout(0.2, inplace=True),
             nn.Linear(dims[3], fc),
+        )
 
         # DUV
 
