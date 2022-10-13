@@ -143,4 +143,97 @@ class HMHSA(nn.Module):
         return x
 
 
-#we add a depthwise separable convolution (DW-Conv) [30] inside the MLP as widely done.
+class MBConv(nn.Module):
+    def __init__(self, in_channels, out_channels, expansion, kernel_size):
+        expanded_channels = in_channels * expansion
+        padding = (kernel_size - 1) // 2
+        # use ResidualAdd if dims match, otherwise a normal Sequential
+        super().__init__()
+        # narrow -> wide
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, expanded_channels, kernel_size = 1, padding = 0, bias = False),
+            nn.BatchNorm2d(expanded_dim),
+            nn.SiLU()
+        )                
+        # wide -> wide
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(expanded_channels, expanded_channels, kernel_size = kernel_size, padding = padding, groups = expanded_channels, bias = False),
+            nn.BatchNorm2d(expanded_channels),
+            nn.SiLU()
+        )
+        # wide -> narrow
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(expanded_channels, out_channels, kernel_size = 1, padding = 0),
+            nn.BatchNorm2d(out_channels)
+        )
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = x + self.conv3(x)
+
+        return x
+    
+    
+ class Block(nn.Module):
+    def __init__(self, dim, head, kernel_size, expansion, grid_size, ds_ratio, drop):
+        super().__init__()
+        self.HMSHA = HMHSA(dim = dim, head = head, grid_size = grid_size, ds_ratio = ds_ratio, drop = drop)
+        self.MLP = MBConv(in_channels = dim, out_channels = dim, expansion = expansion, kernel_size = kernel_size)
+
+    def forward(self, x):
+        x = self.HMSHA(x)
+        x = self.MLP(x)
+
+        return x
+    
+    
+    class HAT_Net(nn.Module):
+    def __init__(self, dims, head, kernel_sizes, expansions, grid_sizes, ds_ratios, drop, depths, fc):
+        super().__init__()
+        self.depths = depths
+
+        # two sequential vanilla 3 × 3 convolutions - first downsample
+        self.CNN = CNN(dim = dims[0])
+
+        # block - H-MSHA + MLP
+        self.blocks = []
+        for stage in range(len(dims)):
+            self.blocks.append(nn.ModuleList([Block(
+                dim = dims[stage], head = head, kernel_size = kernel_sizes[stage], expansion = expansions[stage],
+                grid_size = grid_sizes[stage], ds_ratio = ds_ratios[stage], drop = drop)
+                for i in range(depths[stage])])) # will calculate which block depth times
+        self.blocks = nn.ModuleList(self.blocks)
+
+        # downsamples
+        self.ds1 = Downsample(in_channels = dim[0], out_channels = dim[1])
+        self.ds2 = Downsample(in_channels = dim[1], out_channels = dim[2])
+        self.ds3 = Downsample(in_channels = dim[2], out_channels = dim[3])
+
+        # fully connected layer -> 1000
+        self.fullyconnected = nn.Sequential(
+           # nn.Dropout(0.2, inplace=True),
+            nn.Linear(dims[3], fc),
+
+        # DUV
+
+    def forward(self, x):
+        x = self.CNN(x)
+        for block in self.blocks[0]:
+            x = block(x)
+        x = self.ds1(x)
+        for block in self.blocks[1]:
+            x = block(x)
+        x = self.ds2(x)
+        for block in self.blocks[2]:
+            x = block(x)
+        x = self.ds3(x)
+        for block in self.blocks[3]:
+            x = block(x)
+        x = F.adaptive_avg_pool2d(x, (1, 1)) #.flatten(1) DUV  # F so we specify the input
+        # In adaptive_avg_pool2d, we define the output size we require at the end of the pooling operation, and pytorch infers what pooling parameters to use to do that.
+        x = self.fullyconnected(x)
+
+        # DUV paper - softmax ??
+
+    return x
