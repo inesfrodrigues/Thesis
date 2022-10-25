@@ -2,6 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torchvision.datasets import CIFAR10
+from torchvision.transforms import transforms
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
+from torch.autograd import Variable
+
 from timm.models.layers import DropPath, trunc_normal_
 from timm.models.registry import register_model
 from timm.models.vision_transformer import _cfg
@@ -16,9 +22,9 @@ class CNN(nn.Module):
     def __init__(self, dim, kernel_size=3, stride=2, padding=1): # kernel = 3, stride = 2, padding = 1
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels = 3, out_channels = 16, kernel_size = kernel_size, stride = stride, padding = padding, bias = False)
-        self.bn1 = nn.BatchNorm2d(16),
+        self.bn1 = nn.GroupNorm(1, 16),
         self.conv2 = nn.Conv2d(in_channels = 16, out_channels = dim, kernel_size = kernel_size, stride = stride, padding = padding, bias = False)
-        self.bn2 = nn.BatchNorm2d(dim),
+        self.bn2 = nn.GroupNorm(1, dim),
         self.silu = nn.SiLU()
         
     def forward(self, x):
@@ -30,7 +36,7 @@ class CNN(nn.Module):
         x = self.silu(x) #ver
         
         return x
-
+    
 
 class Downsample(nn.Module): #page 4, paragraph 2
     def __init__(self, in_channels, out_channels): 
@@ -143,19 +149,19 @@ class MBConv(nn.Module):
         # narrow -> wide
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, expanded_channels, kernel_size = 1, padding = 0, bias = False),
-            nn.GroupNorm(expanded_channels),
+            nn.GroupNorm(1, expanded_channels),
             nn.SiLU()
         )                
         # wide -> wide
         self.conv2 = nn.Sequential(
             nn.Conv2d(expanded_channels, expanded_channels, kernel_size = kernel_size, padding = padding, groups = expanded_channels, bias = False),
-            nn.GroupNorm(expanded_channels),
+            nn.GroupNorm(1, expanded_channels),
             nn.SiLU()
         )
         # wide -> narrow
         self.conv3 = nn.Sequential(
             nn.Conv2d(expanded_channels, out_channels, kernel_size = 1, padding = 0, bias = False),
-            nn.GroupNorm(out_channels)
+            nn.GroupNorm(1, out_channels)
         )
 
         self.drop = nn.Dropout2d(drop, inplace = True)
@@ -171,7 +177,7 @@ class MBConv(nn.Module):
     
     
  class Block(nn.Module):
-    def __init__(self, dim, head, kernel_size, expansion, grid_size, ds_ratio, drop):
+    def __init__(self, dim, head, kernel_size, expansion, grid_size, ds_ratio, drop, drop_path):
         super().__init__()
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.HMSHA = HMHSA(dim = dim, head = head, grid_size = grid_size, ds_ratio = ds_ratio, drop = drop)
@@ -189,7 +195,7 @@ class MBConv(nn.Module):
     
     
   class HAT_Net(nn.Module):
-    def __init__(self, dims, head, kernel_sizes, expansions, grid_sizes, ds_ratios, drop, depths, fc, act_layer = nn.SiLU):
+    def __init__(self, dims, head, kernel_sizes, expansions, grid_sizes, ds_ratios, drop, depths, fc, drop_path_rate, act_layer = nn.SiLU):
         super().__init__()
         self.depths = depths
 
@@ -197,19 +203,20 @@ class MBConv(nn.Module):
         #self.CNN = CNN(dim = dims[0])
         self.CNN = nn.Sequential(
             nn.Conv2d(in_channels = 3, out_channels = 16, kernel_size = 3, stride = 2, padding = 1, bias = False),
-            nn.GroupNorm(16),
+            nn.GroupNorm(1, 16),
             act_layer(inplace = True),
             nn.Conv2d(in_channels = 16, out_channels = dims[0], kernel_size = 3, stride = 2, padding = 1, bias = False),
-            nn.GroupNorm(dims[0]),
+            nn.GroupNorm(1, dims[0]),
             act_layer(inplace = True),
         )
 
         # block - H-MSHA + MLP
         self.blocks = []
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
         for stage in range(len(dims)):
             self.blocks.append(nn.ModuleList([Block(
                 dim = dims[stage], head = head, kernel_size = kernel_sizes[stage], expansion = expansions[stage],
-                grid_size = grid_sizes[stage], ds_ratio = ds_ratios[stage], drop = drop)
+                grid_size = grid_sizes[stage], ds_ratio = ds_ratios[stage], drop = drop, drop_path = dpr[sum(depths[:stage]) + i])
                 for i in range(depths[stage])])) # will calculate each block depth times
         self.blocks = nn.ModuleList(self.blocks)
 
@@ -258,13 +265,9 @@ class MBConv(nn.Module):
 # TRAINING
     
 model = HAT_Net(dims = [64, 128, 320, 512], head = 64, kernel_sizes = [5, 3, 5, 3], expansions = [8, 8, 4, 4],
-        grid_sizes = [8, 7, 7, 1], ds_ratios = [8, 4, 2, 1], drop = 0, depths = [3, 6, 18, 3], fc = 1000)
+        grid_sizes = [8, 7, 7, 1], ds_ratios = [8, 4, 2, 1], drop = 0, depths = [3, 6, 18, 3], fc = 1000, drop_path_rate = 0)
     
     
-    
-from torchvision.datasets import CIFAR10
-from torchvision.transforms import transforms
-from torch.utils.data import DataLoader
 
 # Loading and normalizing the data.
 # Define transformations for the training and test sets
@@ -277,44 +280,40 @@ preprocess = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    transforms.Normalize(mean = [0.5, 0.5, 0.5], std = [0.5, 0.5, 0.5]),
 ])
 
 # CIFAR10 dataset consists of 50K training images. We define the batch size of 10 to load 5,000 batches of images.
-batch_size = 1024
+batch_size = 10
 number_of_labels = 10 
 
 # Create an instance for training. 
 # When we run this code for the first time, the CIFAR10 train dataset will be downloaded locally. 
-train_set =CIFAR10(root="./data",train=True,transform=preprocess,download=True)
+train_set =CIFAR10(root = "./data", train = True, transform = preprocess, download = True)
 
 # Create a loader for the training set which will read the data within batch size and put into memory.
-train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=0)
-print("The number of images in a training set is: ", len(train_loader)*batch_size)
+train_loader = DataLoader(train_set, batch_size = batch_size, shuffle = True, num_workers = 0)
+print("The number of images in a training set is: ", len(train_loader) * batch_size)
 
 # Create an instance for testing, note that train is set to False.
 # When we run this code for the first time, the CIFAR10 test dataset will be downloaded locally. 
-test_set = CIFAR10(root="./data", train=False, transform=preprocess, download=True)
+test_set = CIFAR10(root = "./data", train = False, transform = preprocess, download = True)
 
 # Create a loader for the test set which will read the data within batch size and put into memory. 
 # Note that each shuffle is set to false for the test loader.
-test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=0)
-print("The number of images in a test set is: ", len(test_loader)*batch_size)
+test_loader = DataLoader(test_set, batch_size = batch_size, shuffle = False, num_workers = 0)
+print("The number of images in a test set is: ", len(test_loader) * batch_size)
 
 print("The number of batches per epoch is: ", len(train_loader))
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 
-
-from torch.optim import AdamW
  
 # Define the loss function with Classification Cross-Entropy loss and an optimizer with AdamW optimizer
 loss_fn = nn.CrossEntropyLoss()
-optimizer = AdamW(model.parameters(), lr=0.001, weight_decay=0.05)
+optimizer = AdamW(model.parameters(), lr = 0.001, weight_decay = 0.0001)
 
 
-
-from torch.autograd import Variable
 
 # Function to save the model
 def saveModel():
@@ -394,9 +393,6 @@ def train(num_epochs):
             best_accuracy = accuracy
             
             
-            
-import matplotlib.pyplot as plt
-import numpy as np
 
 # Function to show the images
 def imageshow(img):
