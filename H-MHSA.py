@@ -429,7 +429,7 @@ def testBatch():
 if __name__ == "__main__":
     
     # Let's build our model
-    train(300)
+    train(5)
     print('Finished Training')
 
     # Test which classes performed well
