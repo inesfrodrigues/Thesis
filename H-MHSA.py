@@ -375,13 +375,13 @@ def train(num_epochs):
             optimizer.step()
 
             # Let's print statistics for every 1,000 images
-            #running_loss += loss.item()     # extract the loss value
-            #if i % 10 == 9:    
+            running_loss += loss.item()     # extract the loss value
+            if i % 10 == 9:    
                 # print every 1000 (twice per epoch) 
-            #    print('[%d, %5d] loss: %.3f' %
-            #          (epoch + 1, i + 1, running_loss / 1000))
+                print('[%d, %5d] loss: %.3f' %
+                      (epoch + 1, i + 1, running_loss / 1000))
                 # zero the loss
-            #    running_loss = 0.0
+                running_loss = 0.0
 
         # Compute and print the average accuracy fo this epoch when tested over all 10000 test images
         accuracy = testAccuracy()
